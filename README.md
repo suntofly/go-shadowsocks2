@@ -2,38 +2,39 @@
 
 A fresh implementation of Shadowsocks in Go.
 
-GoDoc at https://godoc.org/github.com/shadowsocks/go-shadowsocks2/
-
-[![Build Status](https://travis-ci.org/shadowsocks/go-shadowsocks2.svg?branch=master)](https://travis-ci.org/shadowsocks/go-shadowsocks2)
+GoDoc at https://godoc.org/github.com/riobard/go-shadowsocks2/
 
 
 ## Features
 
-- [x] SOCKS5 proxy with UDP Associate
-- [x] Support for Netfilter TCP redirect (IPv6 should work but not tested)
-- [x] UDP tunneling (e.g. relay DNS packets)
-- [x] TCP tunneling (e.g. benchmark with iperf3)
+- SOCKS5 proxy 
+- Support for Netfilter TCP redirect (IPv6 should work but not tested)
+- UDP tunneling (e.g. relay DNS packets)
+- TCP tunneling (e.g. benchmark with iperf3)
 
 
 ## Install
 
-Pre-built binaries for common platforms are available at https://github.com/shadowsocks/go-shadowsocks2/releases
+Pre-built binaries are available from https://github.com/riobard/go-shadowsocks2/releases
 
-Install from source
+You can also build from source:
 
 ```sh
-go get -u -v github.com/shadowsocks/go-shadowsocks2
+go get -u -v github.com/riobard/go-shadowsocks2
 ```
+
+Requires Go >= 1.10.
 
 
 ## Basic Usage
+
 
 ### Server
 
 Start a server listening on port 8488 using `AEAD_CHACHA20_POLY1305` AEAD cipher with password `your-password`.
 
 ```sh
-shadowsocks2 -s 'ss://AEAD_CHACHA20_POLY1305:your-password@:8488' -verbose
+go-shadowsocks2 -s ss://AEAD_CHACHA20_POLY1305:your-password@:8488 -verbose
 ```
 
 
@@ -44,9 +45,9 @@ connections, and tunnels both UDP and TCP on port 8053 and port 8054 to 8.8.8.8:
 respectively. 
 
 ```sh
-shadowsocks2 -c 'ss://AEAD_CHACHA20_POLY1305:your-password@[server_address]:8488' \
-    -verbose -socks :1080 -u -udptun :8053=8.8.8.8:53,:8054=8.8.4.4:53 \
-                             -tcptun :8053=8.8.8.8:53,:8054=8.8.4.4:53
+go-shadowsocks2 -c ss://AEAD_CHACHA20_POLY1305:PASSWORD@[server_address]:8488 \
+     -verbose -socks :1080 -udptun :8053=8.8.8.8:53,:8054=8.8.4.4:53 \
+                           -tcptun :8053=8.8.8.8:53,:8054=8.8.4.4:53
 ```
 
 Replace `[server_address]` with the server's public address.
@@ -65,7 +66,7 @@ Start a client listening on port 1082 for redirected TCP connections and port 10
 TCP IPv6 connections.
 
 ```sh
-shadowsocks2 -c 'ss://AEAD_CHACHA20_POLY1305:your-password@[server_address]:8488' -redir :1082 -redir6 :1083
+go-shadowsocks2 -c ss://AEAD_CHACHA20_POLY1305:PASSWORD@[server_address]:8488 -redir :1082 -redir6 :1083
 ```
 
 
@@ -86,7 +87,7 @@ Start a client on the same machine with the server. The client listens on port 1
 and tunnels to localhost:5201 where iperf3 is listening.
 
 ```sh
-shadowsocks2 -c 'ss://AEAD_CHACHA20_POLY1305:your-password@[server_address]:8488' -tcptun :1090=localhost:5201
+go-shadowsocks2 -c ss://AEAD_CHACHA20_POLY1305:PASSWORD@[server_address]:8488 -tcptun :1090=localhost:5201
 ```
 
 Start iperf3 client to connect to the tunneld port instead
@@ -96,6 +97,11 @@ iperf3 -c localhost -p 1090
 ```
 
 
+## TODO
+
+- Test coverage
+
+
 ## Design Principles
 
 The code base strives to
@@ -103,3 +109,4 @@ The code base strives to
 - be idiomatic Go and well organized;
 - use fewer external dependences as reasonably possible;
 - only include proven modern ciphers;
+

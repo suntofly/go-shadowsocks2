@@ -1,23 +1,30 @@
 package core
 
-import "net"
+import (
+	"io"
+	"net"
+	"sync"
+	"time"
+)
 
-type listener struct {
-	net.Listener
-	StreamConnCipher
-}
+// relay copies between left and right bidirectionally. Returns any error occurred.
+func Relay(left, right net.Conn) error {
+	var err, err1 error
+	var wg sync.WaitGroup
 
-func Listen(network, address string, ciph StreamConnCipher) (net.Listener, error) {
-	l, err := net.Listen(network, address)
-	return &listener{l, ciph}, err
-}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err1 = io.Copy(right, left)
+		right.SetReadDeadline(time.Now()) // unblock read on right
+	}()
 
-func (l *listener) Accept() (net.Conn, error) {
-	c, err := l.Listener.Accept()
-	return l.StreamConn(c), err
-}
+	_, err = io.Copy(left, right)
+	left.SetReadDeadline(time.Now()) // unblock read on left
+	wg.Wait()
 
-func Dial(network, address string, ciph StreamConnCipher) (net.Conn, error) {
-	c, err := net.Dial(network, address)
-	return ciph.StreamConn(c), err
+	if err1 != nil {
+		err = err1
+	}
+	return err
 }
