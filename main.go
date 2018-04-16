@@ -92,25 +92,20 @@ func main() {
 	}
 
 	if len(flags.Server) > 0 { // server mode
-		c1, _ := core.PickCipher("AEAD_CHACHA20_POLY1305", nil, "Secret1")
-		c2, _ := core.PickCipher("AEAD_CHACHA20_POLY1305", nil, "Secret2")
-		c3, _ := core.PickCipher("AEAD_CHACHA20_POLY1305", nil, "Secret3")
-		go server.TCPRemote("localhost:9999",
-			c1.StreamConn, c2.StreamConn, c3.StreamConn)
-		// for _, each := range flags.Server {
-		// 	addr, cipher, password, err := core.ParseURL(each)
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
+		for _, each := range flags.Server {
+			addr, cipher, password, err := core.ParseURL(each)
+			if err != nil {
+				log.Fatal(err)
+			}
 
-		// 	ciph, err := core.PickCipher(cipher, nil, password)
-		// 	if err != nil {
-		// 		log.Fatal(err)
-		// 	}
+			ciph, err := core.PickCipher(cipher, nil, password)
+			if err != nil {
+				log.Fatal(err)
+			}
 
-		// 	go server.UDPRemote(addr, ciph.PacketConn, flags.UDPTimeout, &udpBufPool)
-		// 	go server.TCPRemote(addr, ciph.StreamConn)
-		// }
+			go server.UDPRemote(addr, ciph.PacketConn, flags.UDPTimeout, &udpBufPool)
+			go server.TCPRemote(addr, ciph.StreamConn)
+		}
 	}
 
 	sigCh := make(chan os.Signal, 1)
