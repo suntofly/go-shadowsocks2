@@ -33,16 +33,16 @@ func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(
 	}
 
 	for {
-		c, err := l.Accept()
+		clientConn, err := l.(*net.TCPListener).AcceptTCP()
 		if err != nil {
 			logf("failed to accept: %s", err)
 			continue
 		}
 
 		go func() {
-			defer c.Close()
-			c.(*net.TCPConn).SetKeepAlive(true)
-			tgt, err := getAddr(c)
+			defer clientConn.Close()
+			clientConn.SetKeepAlive(true)
+			tgt, err := getAddr(clientConn)
 			defer logf("done with %v", tgt)
 			if err != nil {
 
@@ -51,7 +51,7 @@ func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(
 					buf := []byte{}
 					// block here
 					for {
-						_, err := c.Read(buf)
+						_, err := clientConn.Read(buf)
 						if err, ok := err.(net.Error); ok && err.Timeout() {
 							continue
 						}
@@ -64,22 +64,27 @@ func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(
 				return
 			}
 
-			rc, err := net.Dial("tcp", server)
+			c, err := net.Dial("tcp", server)
 			if err != nil {
 				logf("failed to connect to server %v: %v", server, err)
 				return
 			}
-			defer rc.Close()
-			rc.(*net.TCPConn).SetKeepAlive(true)
-			rc = shadow(rc)
+			proxyConn := c.(*net.TCPConn)
+			defer proxyConn.Close()
+			proxyConn.SetKeepAlive(true)
+			shadowConn := shadow(proxyConn)
 
-			if _, err = rc.Write(tgt); err != nil {
+			if _, err = shadowConn.Write(tgt); err != nil {
 				logf("failed to send target address: %v", err)
 				return
 			}
 
-			logf("proxy %s <-> %s <-> %s", c.RemoteAddr(), server, tgt)
-			_, _, err = io.Relay(c, rc)
+			logf("proxy %s <-> %s <-> %s", clientConn.RemoteAddr(), server, tgt)
+			_, _, err = io.Relay(
+				clientConn, clientConn.CloseRead,
+				clientConn, clientConn.CloseWrite,
+				shadowConn, proxyConn.CloseRead,
+				shadowConn, proxyConn.CloseWrite)
 			if err != nil {
 				logf("relay error: %v", err)
 			}
@@ -97,34 +102,39 @@ func tcpRemote(addr string, shadow func(net.Conn) net.Conn) {
 
 	logf("listening TCP on %s", addr)
 	for {
-		c, err := l.Accept()
+		clientConn, err := l.(*net.TCPListener).AcceptTCP()
 		if err != nil {
 			logf("failed to accept: %v", err)
 			continue
 		}
 
 		go func() {
-			defer logf("done with %s", c.RemoteAddr())
-			defer c.Close()
-			c.(*net.TCPConn).SetKeepAlive(true)
-			c = shadow(c)
+			defer logf("done with %s", clientConn.RemoteAddr())
+			defer clientConn.Close()
+			clientConn.SetKeepAlive(true)
+			shadowConn := shadow(clientConn)
 
-			tgt, err := socks.ReadAddr(c)
+			tgt, err := socks.ReadAddr(shadowConn)
 			if err != nil {
 				logf("failed to get target address: %v", err)
 				return
 			}
 
-			rc, err := net.Dial("tcp", tgt.String())
+			c, err := net.Dial("tcp", tgt.String())
 			if err != nil {
 				logf("failed to connect to target: %v", err)
 				return
 			}
-			defer rc.Close()
-			rc.(*net.TCPConn).SetKeepAlive(true)
+			tgtConn := c.(*net.TCPConn)
+			defer tgtConn.Close()
+			tgtConn.SetKeepAlive(true)
 
-			logf("proxy %s <-> %s", c.RemoteAddr(), tgt)
-			_, _, err = io.Relay(c, rc)
+			logf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
+			_, _, err = io.Relay(
+				shadowConn, clientConn.CloseRead,
+				shadowConn, clientConn.CloseWrite,
+				tgtConn, tgtConn.CloseRead,
+				tgtConn, tgtConn.CloseWrite)
 			if err != nil {
 				logf("relay error: %v", err)
 			}

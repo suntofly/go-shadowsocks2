@@ -5,10 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"log"
 	"net"
-
-	sio "github.com/shadowsocks/go-shadowsocks2/io"
 )
 
 // payloadSizeMask is the maximum size of payload in bytes.
@@ -17,7 +14,7 @@ const payloadSizeMask = 0x3FFF // 16*1024 - 1
 // ciphWriter encrypts and signs blocks of plaintext, writing to the given Writer.
 // This class is completely independent of the Shadowsocks protocol.
 type cipherWriter struct {
-	writer io.WriteCloser
+	writer io.Writer
 	cipher cipher.AEAD
 	nonce  []byte
 	buf    []byte
@@ -36,11 +33,7 @@ func (cw *cipherWriter) WriteBlock(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (cw *cipherWriter) Close() error {
-	return cw.writer.Close()
-}
-
-func newCipherWriter(writer io.WriteCloser, aead cipher.AEAD, maxPayloadSize int) *cipherWriter {
+func newCipherWriter(writer io.Writer, aead cipher.AEAD, maxPayloadSize int) *cipherWriter {
 	nonce := make([]byte, aead.NonceSize())
 	buffer := make([]byte, maxPayloadSize+aead.Overhead())
 	return &cipherWriter{writer: writer, cipher: aead, nonce: nonce, buf: buffer}
@@ -54,7 +47,7 @@ type shadowsocksWriter struct {
 
 // newShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func newShadowsocksWriter(writer io.WriteCloser, ssCipher Cipher) io.WriteCloser {
+func NewShadowsocksWriter(writer io.Writer, ssCipher Cipher) io.Writer {
 	init := func(sw *shadowsocksWriter) error {
 		salt := make([]byte, ssCipher.SaltSize())
 		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
@@ -94,18 +87,10 @@ func (sw *shadowsocksWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (sw *shadowsocksWriter) Close() error {
-	// Note: sw.cw may be nil before initialization
-	if sw.cw == nil {
-		return nil
-	}
-	return sw.cw.Close()
-}
-
 // ciphReader decrypts and authenticates blocks of ciphertext from the given Reader.
 // This class is completely independent of the Shadowsocks protocol.
 type cipherReader struct {
-	reader io.ReadCloser
+	reader io.Reader
 	cipher cipher.AEAD
 	nonce  []byte
 	buf    []byte
@@ -137,13 +122,9 @@ func (cr *cipherReader) ReadBlock(decryptedBlockSize int) ([]byte, error) {
 	return buf, nil
 }
 
-func (cr *cipherReader) Close() error {
-	return cr.reader.Close()
-}
-
 // Creates a cipherReader that will read ciphertext from reader and use aead to decrypt.
 // maxPayloadSize will determine the maximum size of a payload that it can read.
-func newCipherReader(reader io.ReadCloser, aead cipher.AEAD, maxPayloadSize int) *cipherReader {
+func newCipherReader(reader io.Reader, aead cipher.AEAD, maxPayloadSize int) *cipherReader {
 	nonce := make([]byte, aead.NonceSize())
 	buffer := make([]byte, maxPayloadSize+aead.Overhead())
 	return &cipherReader{reader: reader, cipher: aead, nonce: nonce, buf: buffer}
@@ -157,7 +138,7 @@ type shadowsocksReader struct {
 
 // newShadowsocksReader creates a Reader that decrypts the given Reader using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func newShadowsocksReader(reader io.ReadCloser, ssCipher Cipher) io.ReadCloser {
+func NewShadowsocksReader(reader io.Reader, ssCipher Cipher) io.Reader {
 	init := func(sr *shadowsocksReader) error {
 		salt := make([]byte, ssCipher.SaltSize())
 		if _, err := io.ReadFull(reader, salt); err != nil {
@@ -205,14 +186,6 @@ func (sr *shadowsocksReader) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-func (sr *shadowsocksReader) Close() error {
-	// Note: sr.cr may be nil before initialization
-	if sr.cr == nil {
-		return nil
-	}
-	return sr.cr.Close()
-}
-
 // increment little-endian encoded unsigned integer b. Wrap around on overflow.
 func increment(b []byte) {
 	for i := range b {
@@ -223,55 +196,23 @@ func increment(b []byte) {
 	}
 }
 
-// All the code below is juggling the conversion
-// net.Conn -> io.ReadCloser + io.WriteCloser -> net.Conn -> net.Conn + CloseReader + CloseWriter
-// It would be cleaner if NewConn took a pair of ReadCloser, WriteCloser and returned a new pair.
-
-type duplexConn struct {
+type connAdaptor struct {
 	net.Conn
-	r io.ReadCloser
-	w io.WriteCloser
+	r io.Reader
+	w io.Writer
 }
 
-func (dc *duplexConn) Read(b []byte) (int, error) {
+func (dc *connAdaptor) Read(b []byte) (int, error) {
 	return dc.r.Read(b)
 }
 
-func (dc *duplexConn) CloseRead() error {
-	log.Println("[duplexConn] CloseRead()")
-	return dc.r.Close()
-}
-
-func (dc *duplexConn) Write(b []byte) (int, error) {
+func (dc *connAdaptor) Write(b []byte) (int, error) {
 	return dc.w.Write(b)
-}
-
-func (dc *duplexConn) CloseWrite() error {
-	log.Println("[duplexConn] CloseWrite()")
-	return dc.w.Close()
-}
-
-type readCloserAdaptor struct {
-	io.Reader
-}
-
-func (a readCloserAdaptor) Close() error {
-	log.Println("[readCloserAdaptor] Close()")
-	return sio.CloseRead(a.Reader)
-}
-
-type writeCloserAdaptor struct {
-	io.Writer
-}
-
-func (a writeCloserAdaptor) Close() error {
-	log.Println("[writeCloserAdaptor] Close()")
-	return sio.CloseWrite(a.Writer)
 }
 
 // NewConn wraps a stream-oriented net.Conn with cipher.
 func NewConn(c net.Conn, ciph Cipher) net.Conn {
-	r := newShadowsocksReader(readCloserAdaptor{c}, ciph)
-	w := newShadowsocksWriter(writeCloserAdaptor{c}, ciph)
-	return &duplexConn{Conn: c, r: r, w: w}
+	r := NewShadowsocksReader(c, ciph)
+	w := NewShadowsocksWriter(c, ciph)
+	return &connAdaptor{Conn: c, r: r, w: w}
 }
