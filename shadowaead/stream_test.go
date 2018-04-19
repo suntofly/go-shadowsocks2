@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"strings"
 	"testing"
 
@@ -23,7 +24,7 @@ func newTestCipher(t *testing.T) cipher.AEAD {
 func TestCipherReaderAuthentiationFailure(t *testing.T) {
 	cipher := newTestCipher(t)
 
-	clientReader := strings.NewReader("Fails Authentication")
+	clientReader := ioutil.NopCloser(strings.NewReader("Fails Authentication"))
 	reader := newCipherReader(clientReader, cipher, payloadSizeMask)
 	_, err := reader.ReadBlock(1)
 	if err == nil {
@@ -34,7 +35,7 @@ func TestCipherReaderAuthentiationFailure(t *testing.T) {
 func TestCipherReaderUnexpectedEOF(t *testing.T) {
 	cipher := newTestCipher(t)
 
-	clientReader := strings.NewReader("short")
+	clientReader := ioutil.NopCloser(strings.NewReader("short"))
 	server := newCipherReader(clientReader, cipher, payloadSizeMask)
 	_, err := server.ReadBlock(10)
 	if err != io.ErrUnexpectedEOF {
@@ -45,7 +46,7 @@ func TestCipherReaderUnexpectedEOF(t *testing.T) {
 func TestCipherReaderEOF(t *testing.T) {
 	cipher := newTestCipher(t)
 
-	clientReader := strings.NewReader("")
+	clientReader := ioutil.NopCloser(strings.NewReader(""))
 	server := newCipherReader(clientReader, cipher, payloadSizeMask)
 	_, err := server.ReadBlock(10)
 	if err != io.EOF {
@@ -60,7 +61,7 @@ func TestCipherReaderEOF(t *testing.T) {
 func TestCipherReaderShortBuffer(t *testing.T) {
 	cipher := newTestCipher(t)
 
-	clientReader := strings.NewReader("")
+	clientReader := ioutil.NopCloser(strings.NewReader(""))
 	server := newCipherReader(clientReader, cipher, payloadSizeMask)
 	_, err := server.ReadBlock(20 * 1024)
 	if err != io.ErrShortBuffer {
@@ -83,7 +84,8 @@ func TestCipherReaderGoodReads(t *testing.T) {
 		t.Fatalf("cipherText has size %v. Expected %v", len(cipherText), expectedCipherSize)
 	}
 
-	reader := newCipherReader(bytes.NewReader(cipherText), cipher, payloadSizeMask)
+	clientReader := ioutil.NopCloser(bytes.NewReader(cipherText))
+	reader := newCipherReader(clientReader, cipher, payloadSizeMask)
 	_, err := reader.ReadBlock(len(block1))
 	if err != nil {
 		t.Fatalf("Failed to read block1: %v", err)
