@@ -71,6 +71,9 @@ func newShadowsocksReader(reader io.ReadCloser, ssCipher Cipher) io.ReadCloser {
 	init := func(sr *shadowsocksReader) error {
 		salt := make([]byte, ssCipher.SaltSize())
 		if _, err := io.ReadFull(reader, salt); err != nil {
+			if err == io.EOF {
+				return io.EOF
+			}
 			return fmt.Errorf("failed to read salt: %v", err)
 		}
 		aead, err := ssCipher.Decrypter(salt)
@@ -87,6 +90,9 @@ func newShadowsocksReader(reader io.ReadCloser, ssCipher Cipher) io.ReadCloser {
 func (sr *shadowsocksReader) Read(b []byte) (int, error) {
 	if sr.init != nil {
 		if err := sr.init(sr); err != nil {
+			if err == io.EOF {
+				return 0, io.EOF
+			}
 			return 0, fmt.Errorf("failed to initialize shadowsocksReader: %v", err)
 		}
 	}
