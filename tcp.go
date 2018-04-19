@@ -3,8 +3,8 @@ package main
 import (
 	"io"
 	"net"
-	"time"
 
+	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
@@ -44,6 +44,7 @@ func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(
 			defer c.Close()
 			c.(*net.TCPConn).SetKeepAlive(true)
 			tgt, err := getAddr(c)
+			defer logf("done with %v", tgt)
 			if err != nil {
 
 				// UDP: keep the connection until disconnect then free the UDP socket
@@ -79,11 +80,8 @@ func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(
 			}
 
 			logf("proxy %s <-> %s <-> %s", c.RemoteAddr(), server, tgt)
-			_, _, err = relay(rc, c)
+			_, _, err = relay(c, rc)
 			if err != nil {
-				if err, ok := err.(net.Error); ok && err.Timeout() {
-					return // ignore i/o timeout
-				}
 				logf("relay error: %v", err)
 			}
 		}()
@@ -107,6 +105,7 @@ func tcpRemote(addr string, shadow func(net.Conn) net.Conn) {
 		}
 
 		go func() {
+			defer logf("done with %s", c.RemoteAddr())
 			defer c.Close()
 			c.(*net.TCPConn).SetKeepAlive(true)
 			c = shadow(c)
@@ -128,18 +127,29 @@ func tcpRemote(addr string, shadow func(net.Conn) net.Conn) {
 			logf("proxy %s <-> %s", c.RemoteAddr(), tgt)
 			_, _, err = relay(c, rc)
 			if err != nil {
-				if err, ok := err.(net.Error); ok && err.Timeout() {
-					return // ignore i/o timeout
-				}
 				logf("relay error: %v", err)
 			}
 		}()
 	}
 }
 
+func copyClose(w io.ReadWriteCloser, r io.ReadWriteCloser) (int64, error) {
+	n, err := io.Copy(w, r)
+	if err != nil {
+		// Connection is broken. Tear down everything
+		w.Close()
+		r.Close()
+		return 0, err
+	}
+	// Copy finished successfully: close that direction only.
+	shadowaead.CloseRead(r)
+	shadowaead.CloseWrite(w)
+	return n, err
+}
+
 // relay copies between left and right bidirectionally. Returns number of
 // bytes copied from right to left, from left to right, and any error occurred.
-func relay(left, right net.Conn) (int64, int64, error) {
+func relay(left, right io.ReadWriteCloser) (int64, int64, error) {
 	type res struct {
 		N   int64
 		Err error
@@ -147,15 +157,13 @@ func relay(left, right net.Conn) (int64, int64, error) {
 	ch := make(chan res)
 
 	go func() {
-		n, err := io.Copy(right, left)
-		right.SetDeadline(time.Now()) // wake up the other goroutine blocking on right
-		left.SetDeadline(time.Now())  // wake up the other goroutine blocking on left
+		n, err := copyClose(right, left)
+		logf("copyClose L->R done")
 		ch <- res{n, err}
 	}()
 
-	n, err := io.Copy(left, right)
-	right.SetDeadline(time.Now()) // wake up the other goroutine blocking on right
-	left.SetDeadline(time.Now())  // wake up the other goroutine blocking on left
+	n, err := copyClose(left, right)
+	logf("copyClose L<-R done")
 	rs := <-ch
 
 	if err == nil {
