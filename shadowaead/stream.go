@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net"
+
+	sio "github.com/shadowsocks/go-shadowsocks2/io"
 )
 
 // payloadSizeMask is the maximum size of payload in bytes.
@@ -223,6 +225,7 @@ func increment(b []byte) {
 
 // All the code below is juggling the conversion
 // net.Conn -> io.ReadCloser + io.WriteCloser -> net.Conn -> net.Conn + CloseReader + CloseWriter
+// It would be cleaner if NewConn took a pair of ReadCloser, WriteCloser and returned a new pair.
 
 type duplexConn struct {
 	net.Conn
@@ -248,45 +251,13 @@ func (dc *duplexConn) CloseWrite() error {
 	return dc.w.Close()
 }
 
-type CloseReader interface {
-	CloseRead() error
-}
-
-func CloseRead(r interface{}) error {
-	switch rt := r.(type) {
-	case CloseReader:
-		log.Println("[CloseRead] a.CloseRead()")
-		return rt.CloseRead()
-	case io.Closer:
-		log.Println("[CloseRead] a.Close()")
-		return rt.Close()
-	}
-	return nil
-}
-
-type CloseWriter interface {
-	CloseWrite() error
-}
-
-func CloseWrite(w interface{}) error {
-	switch wt := w.(type) {
-	case CloseWriter:
-		log.Println("[CloseWrite] a.CloseWrite()")
-		return wt.CloseWrite()
-	case io.Closer:
-		log.Println("[CloseWrite] a.Close()")
-		return wt.Close()
-	}
-	return nil
-}
-
 type readCloserAdaptor struct {
 	io.Reader
 }
 
 func (a readCloserAdaptor) Close() error {
 	log.Println("[readCloserAdaptor] Close()")
-	return CloseRead(a.Reader)
+	return sio.CloseRead(a.Reader)
 }
 
 type writeCloserAdaptor struct {
@@ -295,7 +266,7 @@ type writeCloserAdaptor struct {
 
 func (a writeCloserAdaptor) Close() error {
 	log.Println("[writeCloserAdaptor] Close()")
-	return CloseWrite(a.Writer)
+	return sio.CloseWrite(a.Writer)
 }
 
 // NewConn wraps a stream-oriented net.Conn with cipher.
