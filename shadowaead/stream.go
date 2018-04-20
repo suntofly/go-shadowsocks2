@@ -90,75 +90,74 @@ func (sw *shadowsocksWriter) Write(p []byte) (int, error) {
 	return toWrite, nil
 }
 
-// ciphReader decrypts and authenticates blocks of ciphertext from the given Reader.
-// This class is completely independent of the Shadowsocks protocol.
-type cipherReader struct {
-	reader io.Reader
-	cipher cipher.AEAD
-	nonce  []byte
-	buf    []byte
+type shadowsocksReader struct {
+	reader   io.Reader
+	ssCipher Cipher
+	aead     cipher.AEAD
+	nonce    []byte
+	buf      []byte
+	leftover []byte
+}
+
+// ShadowsocksReader is an io.Reader that also implements io.WriterTo to
+// allow for piping the data without extra allocations and copies.
+type ShadowsocksReader interface {
+	io.Reader
+	io.WriterTo
+}
+
+// NewShadowsocksReader creates a Reader that decrypts the given Reader using
+// the shadowsocks protocol with the given shadowsocks cipher.
+func NewShadowsocksReader(reader io.Reader, ssCipher Cipher) ShadowsocksReader {
+	return &shadowsocksReader{reader: reader, ssCipher: ssCipher}
+}
+
+func (sr *shadowsocksReader) init() (err error) {
+	if sr.aead == nil {
+		salt := make([]byte, sr.ssCipher.SaltSize())
+		if _, err := io.ReadFull(sr.reader, salt); err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				err = fmt.Errorf("failed to read salt: %v", err)
+			}
+			return err
+		}
+		sr.aead, err = sr.ssCipher.Decrypter(salt)
+		if err != nil {
+			return fmt.Errorf("failed to create AEAD: %v", err)
+		}
+		sr.nonce = make([]byte, sr.aead.NonceSize())
+		sr.buf = make([]byte, payloadSizeMask+sr.aead.Overhead())
+	}
+	return nil
 }
 
 // ReadBlock reads and decrypts a single signed block of ciphertext.
 // The block will match the given decryptedBlockSize.
 // The returned slice is only valid until the next Read call.
-func (cr *cipherReader) ReadBlock(decryptedBlockSize int) ([]byte, error) {
+func (sr *shadowsocksReader) readBlock(decryptedBlockSize int) ([]byte, error) {
+	if err := sr.init(); err != nil {
+		return nil, err
+	}
 	if decryptedBlockSize == 0 {
 		// This read allows us to propagate EOF without consuming the reader
-		_, err := cr.reader.Read(cr.buf[:0])
-		return cr.buf[:0], err
+		_, err := sr.reader.Read(sr.buf[:0])
+		return sr.buf[:0], err
 	}
-	cipherBlockSize := decryptedBlockSize + cr.cipher.Overhead()
-	if cipherBlockSize > cap(cr.buf) {
+	cipherBlockSize := decryptedBlockSize + sr.aead.Overhead()
+	if cipherBlockSize > cap(sr.buf) {
 		return nil, io.ErrShortBuffer
 	}
-	buf := cr.buf[:cipherBlockSize]
-	_, err := io.ReadFull(cr.reader, buf)
+	buf := sr.buf[:cipherBlockSize]
+	_, err := io.ReadFull(sr.reader, buf)
 	if err != nil {
 		return nil, err
 	}
-	buf, err = cr.cipher.Open(buf[:0], cr.nonce, buf, nil)
-	increment(cr.nonce)
+	buf, err = sr.aead.Open(buf[:0], sr.nonce, buf, nil)
+	increment(sr.nonce)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrypt: %v", err)
 	}
 	return buf, nil
-}
-
-// Creates a cipherReader that will read ciphertext from reader and use aead to decrypt.
-// maxPayloadSize will determine the maximum size of a payload that it can read.
-func newCipherReader(reader io.Reader, aead cipher.AEAD, maxPayloadSize int) *cipherReader {
-	nonce := make([]byte, aead.NonceSize())
-	buffer := make([]byte, maxPayloadSize+aead.Overhead())
-	return &cipherReader{reader: reader, cipher: aead, nonce: nonce, buf: buffer}
-}
-
-type shadowsocksReader struct {
-	cr       *cipherReader
-	leftover []byte
-	init     func(*shadowsocksReader) error
-}
-
-// NewShadowsocksReader creates a Reader that decrypts the given Reader using
-// the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksReader(reader io.Reader, ssCipher Cipher) io.Reader {
-	init := func(sr *shadowsocksReader) error {
-		salt := make([]byte, ssCipher.SaltSize())
-		if _, err := io.ReadFull(reader, salt); err != nil {
-			if err == io.EOF {
-				return io.EOF
-			}
-			return fmt.Errorf("failed to read salt: %v", err)
-		}
-		aead, err := ssCipher.Decrypter(salt)
-		if err != nil {
-			return fmt.Errorf("failed to create AEAD: %v", err)
-		}
-		sr.cr = newCipherReader(reader, aead, payloadSizeMask)
-		sr.init = nil
-		return nil
-	}
-	return &shadowsocksReader{init: init}
 }
 
 func (sr *shadowsocksReader) Read(b []byte) (int, error) {
@@ -175,25 +174,17 @@ func (sr *shadowsocksReader) WriteTo(w io.Writer) (written int64, err error) {
 }
 
 func (sr *shadowsocksReader) writeLoop(w interface{}) (written int64, err error) {
-	if sr.init != nil {
-		if err = sr.init(sr); err != nil {
-			if err != io.EOF {
-				err = fmt.Errorf("failed to initialize shadowsocksReader: %v", err)
-			}
-			return 0, err
-		}
-	}
 	for {
 		if len(sr.leftover) == 0 {
-			buf, err := sr.cr.ReadBlock(2)
+			buf, err := sr.readBlock(2)
 			if err != nil {
-				if err != io.EOF {
+				if err != io.EOF && err != io.ErrUnexpectedEOF {
 					err = fmt.Errorf("failed to read payload size: %v", err)
 				}
 				return written, err
 			}
 			size := (int(buf[0])<<8 + int(buf[1])) & payloadSizeMask
-			payload, err := sr.cr.ReadBlock(size)
+			payload, err := sr.readBlock(size)
 			if err != nil {
 				return written, fmt.Errorf("failed to read payload: %v", err)
 			}
