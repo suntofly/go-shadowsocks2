@@ -167,26 +167,30 @@ func (sr *shadowsocksReader) Read(b []byte) (int, error) {
 }
 
 func (sr *shadowsocksReader) WriteTo(w io.Writer) (written int64, err error) {
-	return sr.writeLoop(w)
+	n, err := sr.writeLoop(w)
+	if err == io.EOF {
+		err = nil
+	}
+	return n, err
 }
 
 func (sr *shadowsocksReader) writeLoop(w interface{}) (written int64, err error) {
 	if sr.init != nil {
 		if err = sr.init(sr); err != nil {
-			if err == io.EOF {
-				return 0, nil
+			if err != io.EOF {
+				err = fmt.Errorf("failed to initialize shadowsocksReader: %v", err)
 			}
-			return 0, fmt.Errorf("failed to initialize shadowsocksReader: %v", err)
+			return 0, err
 		}
 	}
 	for {
 		if len(sr.leftover) == 0 {
 			buf, err := sr.cr.ReadBlock(2)
 			if err != nil {
-				if err == io.EOF {
-					return written, io.EOF
+				if err != io.EOF {
+					err = fmt.Errorf("failed to read payload size: %v", err)
 				}
-				return written, fmt.Errorf("failed to read payload size: %v", err)
+				return written, err
 			}
 			size := (int(buf[0])<<8 + int(buf[1])) & payloadSizeMask
 			payload, err := sr.cr.ReadBlock(size)
