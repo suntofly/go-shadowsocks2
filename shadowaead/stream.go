@@ -74,8 +74,11 @@ func (sw *shadowsocksWriter) Write(p []byte) (int, error) {
 			return 0, fmt.Errorf("Failed to initialize shadowsocksWriter: %v", err)
 		}
 	}
-	size := len(p)
-	buf := []byte{byte(size >> 8), byte(size)} // big-endian payload size
+	toWrite := len(p)
+	if toWrite > payloadSizeMask {
+		toWrite = payloadSizeMask
+	}
+	buf := []byte{byte(toWrite >> 8), byte(toWrite)} // big-endian payload size
 	_, err := sw.cw.WriteBlock(buf)
 	if err != nil {
 		return 0, fmt.Errorf("failed to write payload size: %v", err)
@@ -84,7 +87,7 @@ func (sw *shadowsocksWriter) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to write payload: %v", err)
 	}
-	return len(p), nil
+	return toWrite, nil
 }
 
 // ciphReader decrypts and authenticates blocks of ciphertext from the given Reader.
