@@ -45,7 +45,7 @@ type shadowsocksWriter struct {
 	init func(*shadowsocksWriter) error
 }
 
-// newShadowsocksWriter creates a Writer that encrypts the given Writer using
+// NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
 func NewShadowsocksWriter(writer io.Writer, ssCipher Cipher) io.Writer {
 	init := func(sw *shadowsocksWriter) error {
@@ -139,7 +139,7 @@ type shadowsocksReader struct {
 	init     func(*shadowsocksReader) error
 }
 
-// newShadowsocksReader creates a Reader that decrypts the given Reader using
+// NewShadowsocksReader creates a Reader that decrypts the given Reader using
 // the shadowsocks protocol with the given shadowsocks cipher.
 func NewShadowsocksReader(reader io.Reader, ssCipher Cipher) io.Reader {
 	init := func(sr *shadowsocksReader) error {
@@ -235,8 +235,16 @@ func (dc *connAdaptor) Read(b []byte) (int, error) {
 	return dc.r.Read(b)
 }
 
+func (dc *connAdaptor) WriteTo(w io.Writer) (int64, error) {
+	return io.Copy(w, dc.r)
+}
+
 func (dc *connAdaptor) Write(b []byte) (int, error) {
 	return dc.w.Write(b)
+}
+
+func (dc *connAdaptor) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(dc.w, r)
 }
 
 // NewConn wraps a stream-oriented net.Conn with cipher.
