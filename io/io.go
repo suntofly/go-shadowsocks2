@@ -5,7 +5,7 @@ import (
 	"log"
 )
 
-func copyClose(writer io.Writer, writerClose func() error,
+func copyOneWay(writer io.Writer, writerClose func() error,
 	reader io.Reader, readerClose func() error) (int64, error) {
 	n, err := io.Copy(writer, reader)
 	writerClose()
@@ -28,13 +28,13 @@ func Relay(leftReader io.Reader, leftReaderClose func() error,
 	ch := make(chan res)
 
 	go func() {
-		n, err := copyClose(rightWriter, rightWriterClose, leftReader, leftReaderClose)
-		log.Printf("copyClose L->R done: %v %v", n, err)
+		n, err := copyOneWay(rightWriter, rightWriterClose, leftReader, leftReaderClose)
+		log.Printf("copyOneWay L->R done: %v %v", n, err)
 		ch <- res{n, err}
 	}()
 
-	n, err := copyClose(leftWriter, leftWriterClose, rightReader, rightReaderClose)
-	log.Printf("copyClose L<-R done: %v %v", n, err)
+	n, err := copyOneWay(leftWriter, leftWriterClose, rightReader, rightReaderClose)
+	log.Printf("copyOneWay L<-R done: %v %v", n, err)
 	rs := <-ch
 
 	if err == nil {
