@@ -159,31 +159,53 @@ func NewShadowsocksReader(reader io.Reader, ssCipher Cipher) io.Reader {
 }
 
 func (sr *shadowsocksReader) Read(b []byte) (int, error) {
+	n, err := sr.writeLoop(b)
+	return int(n), err
+}
+
+func (sr *shadowsocksReader) WriteTo(w io.Writer) (written int64, err error) {
+	return sr.writeLoop(w)
+}
+
+func (sr *shadowsocksReader) writeLoop(w interface{}) (written int64, err error) {
 	if sr.init != nil {
-		if err := sr.init(sr); err != nil {
+		if err = sr.init(sr); err != nil {
 			if err == io.EOF {
-				return 0, io.EOF
+				return 0, nil
 			}
 			return 0, fmt.Errorf("failed to initialize shadowsocksReader: %v", err)
 		}
 	}
-	if len(sr.leftover) == 0 {
-		buf, err := sr.cr.ReadBlock(2)
-		if err == io.EOF {
-			return 0, io.EOF
-		} else if err != nil {
-			return 0, fmt.Errorf("failed to read payload size: %v", err)
+	for {
+		if len(sr.leftover) == 0 {
+			buf, err := sr.cr.ReadBlock(2)
+			if err != nil {
+				if err == io.EOF {
+					return written, io.EOF
+				}
+				return written, fmt.Errorf("failed to read payload size: %v", err)
+			}
+			size := (int(buf[0])<<8 + int(buf[1])) & payloadSizeMask
+			payload, err := sr.cr.ReadBlock(size)
+			if err != nil {
+				return written, fmt.Errorf("failed to read payload: %v", err)
+			}
+			sr.leftover = payload
 		}
-		size := (int(buf[0])<<8 + int(buf[1])) & payloadSizeMask
-		payload, err := sr.cr.ReadBlock(size)
-		if err != nil {
-			return 0, fmt.Errorf("failed to read payload: %v", err)
+		switch v := w.(type) {
+		case io.Writer:
+			n, err := v.Write(sr.leftover)
+			written += int64(n)
+			sr.leftover = sr.leftover[n:]
+			if err != nil {
+				return written, err
+			}
+		case []byte:
+			n := copy(v, sr.leftover)
+			sr.leftover = sr.leftover[n:]
+			return int64(n), nil
 		}
-		sr.leftover = payload
 	}
-	n := copy(b, sr.leftover)
-	sr.leftover = sr.leftover[n:]
-	return n, nil
 }
 
 // increment little-endian encoded unsigned integer b. Wrap around on overflow.
