@@ -112,6 +112,7 @@ func NewShadowsocksReader(reader io.Reader, ssCipher Cipher) ShadowsocksReader {
 	return &shadowsocksReader{reader: reader, ssCipher: ssCipher}
 }
 
+// init reads the salt from the inner Reader and sets up the AEAD object
 func (sr *shadowsocksReader) init() (err error) {
 	if sr.aead == nil {
 		salt := make([]byte, sr.ssCipher.SaltSize())
