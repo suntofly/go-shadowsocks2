@@ -148,3 +148,27 @@ func TestCipherReaderCloseError(t *testing.T) {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 }
+
+func TestEndToEnd(t *testing.T) {
+	cipher := newTestCipher(t)
+
+	connReader, connWriter := io.Pipe()
+	writer := NewShadowsocksWriter(connWriter, cipher)
+	reader := NewShadowsocksReader(connReader, cipher)
+	expected := "Test"
+	go func() {
+		defer connWriter.Close()
+		_, err := writer.Write([]byte(expected))
+		if err != nil {
+			t.Fatalf("Failed Write: %v", err)
+		}
+	}()
+	var output bytes.Buffer
+	_, err := reader.WriteTo(&output)
+	if err != nil {
+		t.Fatalf("Failed WriteTo: %v", err)
+	}
+	if output.String() != expected {
+		t.Fatalf("Expected output '%v'. Got '%v'", expected, output.String())
+	}
+}
