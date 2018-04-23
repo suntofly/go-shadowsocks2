@@ -1,6 +1,7 @@
 package shadowaead
 
 import (
+	"bytes"
 	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
@@ -11,88 +12,99 @@ import (
 // payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
 
-// ciphWriter encrypts and signs blocks of plaintext, writing to the given Writer.
-// This class is completely independent of the Shadowsocks protocol.
-type cipherWriter struct {
-	writer io.Writer
-	cipher cipher.AEAD
-	nonce  []byte
-	buf    []byte
-}
-
-// WriteBlock encrypts and writes the input buffer as one signed block.
-func (cw *cipherWriter) WriteBlock(b []byte) (int, error) {
-	// TODO: Should we allocate the seal buffer on the stack here
-	// rather than on cipherWriter?
-	out := cw.cipher.Seal(cw.buf[:0], cw.nonce, b, nil)
-	increment(cw.nonce)
-	_, err := cw.writer.Write(out)
-	if err != nil {
-		return 0, err
-	}
-	return len(b), nil
-}
-
-func newCipherWriter(writer io.Writer, aead cipher.AEAD, maxPayloadSize int) *cipherWriter {
-	nonce := make([]byte, aead.NonceSize())
-	buffer := make([]byte, maxPayloadSize+aead.Overhead())
-	return &cipherWriter{writer: writer, cipher: aead, nonce: nonce, buf: buffer}
+// ShadowsocksWriter is an io.Writer that also implements io.ReaderFrom to
+// allow for piping the data without extra allocations and copies.
+type ShadowsocksWriter interface {
+	io.Writer
+	io.ReaderFrom
 }
 
 type shadowsocksWriter struct {
-	cw *cipherWriter
-	// Used to lazily initialize the shadowsocksWriter
-	init func(*shadowsocksWriter) error
+	writer   io.Writer
+	ssCipher Cipher
+	// These are lazily initialized:
+	buf   []byte
+	aead  cipher.AEAD
+	nonce []byte
 }
 
 // NewShadowsocksWriter creates a Writer that encrypts the given Writer using
 // the shadowsocks protocol with the given shadowsocks cipher.
-func NewShadowsocksWriter(writer io.Writer, ssCipher Cipher) io.Writer {
-	init := func(sw *shadowsocksWriter) error {
-		salt := make([]byte, ssCipher.SaltSize())
+func NewShadowsocksWriter(writer io.Writer, ssCipher Cipher) ShadowsocksWriter {
+	return &shadowsocksWriter{writer: writer, ssCipher: ssCipher}
+}
+
+// init generates a random salt, sets up the AEAD object and writes
+// the salt to the inner Writer.
+func (sw *shadowsocksWriter) init() (err error) {
+	if sw.aead == nil {
+		salt := make([]byte, sw.ssCipher.SaltSize())
 		if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 			return fmt.Errorf("failed to generate salt: %v", err)
 		}
-		_, err := writer.Write(salt)
+		_, err := sw.writer.Write(salt)
 		if err != nil {
 			return fmt.Errorf("failed to write salt: %v", err)
 		}
-		aead, err := ssCipher.Encrypter(salt)
+		sw.aead, err = sw.ssCipher.Encrypter(salt)
 		if err != nil {
 			return fmt.Errorf("failed to create AEAD: %v", err)
 		}
-		sw.cw = newCipherWriter(writer, aead, payloadSizeMask)
-		sw.init = nil
-		return nil
+		sw.nonce = make([]byte, sw.aead.NonceSize())
+		sw.buf = make([]byte, 2+sw.aead.Overhead()+payloadSizeMask+sw.aead.Overhead())
 	}
-	return &shadowsocksWriter{init: init}
+	return nil
+}
+
+// WriteBlock encrypts and writes the input buffer as one signed block.
+func (sw *shadowsocksWriter) encryptBlock(ciphertext []byte, plaintext []byte) ([]byte, error) {
+	out := sw.aead.Seal(ciphertext, sw.nonce, plaintext, nil)
+	increment(sw.nonce)
+	return out, nil
 }
 
 func (sw *shadowsocksWriter) Write(p []byte) (int, error) {
-	if sw.init != nil {
-		if err := sw.init(sw); err != nil {
-			return 0, fmt.Errorf("Failed to initialize shadowsocksWriter: %v", err)
+	n, err := sw.ReadFrom(bytes.NewReader(p))
+	return int(n), err
+}
+
+func (sw *shadowsocksWriter) ReadFrom(r io.Reader) (int64, error) {
+	if err := sw.init(); err != nil {
+		return 0, err
+	}
+	var written int64
+	sizeBuf := sw.buf[:2+sw.aead.Overhead()]
+	payloadBuf := sw.buf[len(sizeBuf):]
+	for {
+		plaintextSize, err := r.Read(payloadBuf[:payloadSizeMask])
+		if plaintextSize > 0 {
+			// big-endian payload size
+			sizeBuf[0], sizeBuf[1] = byte(plaintextSize>>8), byte(plaintextSize)
+			_, err = sw.encryptBlock(sizeBuf[:0], sizeBuf[:2])
+			if err != nil {
+				return written, fmt.Errorf("failed to encypt payload size: %v", err)
+			}
+			_, err := sw.encryptBlock(payloadBuf[:0], payloadBuf[:plaintextSize])
+			if err != nil {
+				return written, fmt.Errorf("failed to encrypt payload: %v", err)
+			}
+			payloadSize := plaintextSize + sw.aead.Overhead()
+			_, err = sw.writer.Write(sw.buf[:len(sizeBuf)+payloadSize])
+			written += int64(plaintextSize)
+		}
+		if err != nil {
+			if err == io.EOF { // ignore EOF as per io.ReaderFrom contract
+				return written, nil
+			}
+			return written, fmt.Errorf("Failed to read payload: %v", err)
 		}
 	}
-	toWrite := len(p)
-	if toWrite > payloadSizeMask {
-		toWrite = payloadSizeMask
-	}
-	buf := []byte{byte(toWrite >> 8), byte(toWrite)} // big-endian payload size
-	_, err := sw.cw.WriteBlock(buf)
-	if err != nil {
-		return 0, fmt.Errorf("failed to write payload size: %v", err)
-	}
-	_, err = sw.cw.WriteBlock(p)
-	if err != nil {
-		return 0, fmt.Errorf("failed to write payload: %v", err)
-	}
-	return toWrite, nil
 }
 
 type shadowsocksReader struct {
 	reader   io.Reader
 	ssCipher Cipher
+	// These are lazily initialized:
 	aead     cipher.AEAD
 	nonce    []byte
 	buf      []byte
