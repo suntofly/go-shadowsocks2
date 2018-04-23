@@ -139,11 +139,6 @@ func (sr *shadowsocksReader) readBlock(decryptedBlockSize int) ([]byte, error) {
 	if err := sr.init(); err != nil {
 		return nil, err
 	}
-	if decryptedBlockSize == 0 {
-		// This read allows us to propagate EOF without consuming the reader
-		_, err := sr.reader.Read(sr.buf[:0])
-		return sr.buf[:0], err
-	}
 	cipherBlockSize := decryptedBlockSize + sr.aead.Overhead()
 	if cipherBlockSize > cap(sr.buf) {
 		return nil, io.ErrShortBuffer
