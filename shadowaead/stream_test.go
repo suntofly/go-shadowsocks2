@@ -1,10 +1,13 @@
 package shadowaead
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 func newTestCipher(t *testing.T) Cipher {
@@ -15,6 +18,9 @@ func newTestCipher(t *testing.T) Cipher {
 	}
 	return cipher
 }
+
+// Overhead for cipher chacha20poly1305
+const testCipherOverhead = 16
 
 func TestCipherReaderAuthentiationFailure(t *testing.T) {
 	cipher := newTestCipher(t)
@@ -53,40 +59,61 @@ func TestCipherReaderEOF(t *testing.T) {
 	}
 }
 
-// TODO: Re-write this test
-// func TestCipherReaderGoodReads(t *testing.T) {
-// 	cipher := newTestCipher(t)
-// 	nonce := make([]byte, cipher.NonceSize())
+func encryptBlocks(cipher Cipher, salt []byte, blocks [][]byte) (io.Reader, error) {
+	var ssText bytes.Buffer
+	aead, err := cipher.Encrypter(salt)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to create AEAD: %v", err)
+	}
+	ssText.Write(salt)
+	// buf must fit the larges block ciphertext
+	buf := make([]byte, 2+100+testCipherOverhead)
+	var expectedCipherSize int
+	nonce := make([]byte, chacha20poly1305.NonceSize)
+	for _, block := range blocks {
+		ssText.Write(aead.Seal(buf[:0], nonce, []byte{0, byte(len(block))}, nil))
+		nonce[0]++
+		expectedCipherSize += 2 + testCipherOverhead
+		ssText.Write(aead.Seal(buf[:0], nonce, block, nil))
+		nonce[0]++
+		expectedCipherSize += len(block) + testCipherOverhead
+	}
+	if ssText.Len() != cipher.SaltSize()+expectedCipherSize {
+		return nil, fmt.Errorf("cipherText has size %v. Expected %v", ssText.Len(), cipher.SaltSize()+expectedCipherSize)
+	}
+	return &ssText, nil
+}
 
-// 	block1 := []byte("First Block")
-// 	block2 := []byte("Second Block")
-// 	expectedCipherSize := len(block1) + len(block2) + 2*cipher.Overhead()
-// 	cipherText := make([]byte, expectedCipherSize)
-// 	cipherText = cipher.Seal(cipherText[:0], nonce, block1, nil)
-// 	nonce[0] = 1
-// 	cipherText = cipher.Seal(cipherText, nonce, block2, nil)
-// 	if len(cipherText) != expectedCipherSize {
-// 		t.Fatalf("cipherText has size %v. Expected %v", len(cipherText), expectedCipherSize)
-// 	}
+func TestCipherReaderGoodReads(t *testing.T) {
+	cipher := newTestCipher(t)
 
-// 	reader := NewShadowsocksReader(bytes.NewReader(cipherText), cipher)
-// 	_, err := reader.ReadBlock(len(block1))
-// 	if err != nil {
-// 		t.Fatalf("Failed to read block1: %v", err)
-// 	}
-// 	_, err = reader.ReadBlock(0)
-// 	if err != nil {
-// 		t.Fatalf("Failed empty read: %v", err)
-// 	}
-// 	_, err = reader.ReadBlock(len(block2))
-// 	if err != nil {
-// 		t.Fatalf("Failed to read block2: %v", err)
-// 	}
-// 	_, err = reader.ReadBlock(0)
-// 	if err != io.EOF {
-// 		t.Fatalf("Expected EOF, got %v", err)
-// 	}
-// }
+	salt := []byte("12345678901234567890123456789012")
+	if len(salt) != cipher.SaltSize() {
+		t.Fatalf("Salt has size %v. Expected %v", len(salt), cipher.SaltSize())
+	}
+	ssText, err := encryptBlocks(cipher, salt, [][]byte{
+		[]byte("[First Block]"),
+		[]byte(""), // Corner case: empty block
+		[]byte("[Third Block]")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reader := NewShadowsocksReader(ssText, cipher)
+	plainText := make([]byte, len("[First Block]")+len("[Third Block]"))
+	n, err := io.ReadFull(reader, plainText)
+	if err != nil {
+		t.Fatalf("Failed to fully read plain text. Got %v bytes: %v", n, err)
+	}
+	_, err = reader.Read([]byte{})
+	if err != io.EOF {
+		t.Fatalf("Expected EOF, got %v", err)
+	}
+	_, err = reader.Read(make([]byte, 1))
+	if err != io.EOF {
+		t.Fatalf("Expected EOF, got %v", err)
+	}
+}
 
 func TestCipherReaderClose(t *testing.T) {
 	cipher := newTestCipher(t)
