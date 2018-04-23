@@ -161,19 +161,19 @@ func (sr *shadowsocksReader) readBlock(decryptedBlockSize int) ([]byte, error) {
 }
 
 func (sr *shadowsocksReader) Read(b []byte) (int, error) {
-	n, err := sr.writeLoop(b)
+	n, err := sr.readLoop(b)
 	return int(n), err
 }
 
 func (sr *shadowsocksReader) WriteTo(w io.Writer) (written int64, err error) {
-	n, err := sr.writeLoop(w)
+	n, err := sr.readLoop(w)
 	if err == io.EOF {
 		err = nil
 	}
 	return n, err
 }
 
-func (sr *shadowsocksReader) writeLoop(w interface{}) (written int64, err error) {
+func (sr *shadowsocksReader) readLoop(w interface{}) (written int64, err error) {
 	for {
 		if len(sr.leftover) == 0 {
 			buf, err := sr.readBlock(2)
