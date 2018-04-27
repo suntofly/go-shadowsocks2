@@ -8,10 +8,10 @@ import (
 func copyOneWay(writer io.Writer, writerClose func() error,
 	reader io.Reader, readerClose func() error) (int64, error) {
 	n, err := io.Copy(writer, reader)
+	// Send FIN to indicate EOF
 	writerClose()
-	if n == 0 || err != nil {
-		readerClose()
-	}
+	// Release reader resources
+	readerClose()
 	return n, err
 }
 
