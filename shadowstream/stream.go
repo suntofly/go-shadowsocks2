@@ -5,7 +5,8 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"io"
-	"net"
+
+	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 )
 
 const bufSize = 32 * 1024
@@ -96,25 +97,25 @@ func (r *reader) WriteTo(w io.Writer) (n int64, err error) {
 }
 
 type conn struct {
-	net.Conn
+	ssnet.DuplexConn
 	Cipher
 	r *reader
 	w *writer
 }
 
 // NewConn wraps a stream-oriented net.Conn with stream cipher encryption/decryption.
-func NewConn(c net.Conn, ciph Cipher) net.Conn {
-	return &conn{Conn: c, Cipher: ciph}
+func NewConn(c ssnet.DuplexConn, ciph Cipher) ssnet.DuplexConn {
+	return &conn{DuplexConn: c, Cipher: ciph}
 }
 
 func (c *conn) initReader() error {
 	if c.r == nil {
 		buf := make([]byte, bufSize)
 		iv := buf[:c.IVSize()]
-		if _, err := io.ReadFull(c.Conn, iv); err != nil {
+		if _, err := io.ReadFull(c.DuplexConn, iv); err != nil {
 			return err
 		}
-		c.r = &reader{Reader: c.Conn, Stream: c.Decrypter(iv), buf: buf}
+		c.r = &reader{Reader: c.DuplexConn, Stream: c.Decrypter(iv), buf: buf}
 	}
 	return nil
 }
@@ -137,6 +138,10 @@ func (c *conn) WriteTo(w io.Writer) (int64, error) {
 	return c.r.WriteTo(w)
 }
 
+func (c *conn) CloseRead() error {
+	return c.DuplexConn.CloseRead()
+}
+
 func (c *conn) initWriter() error {
 	if c.w == nil {
 		buf := make([]byte, bufSize)
@@ -144,10 +149,10 @@ func (c *conn) initWriter() error {
 		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
 			return err
 		}
-		if _, err := c.Conn.Write(iv); err != nil {
+		if _, err := c.DuplexConn.Write(iv); err != nil {
 			return err
 		}
-		c.w = &writer{Writer: c.Conn, Stream: c.Encrypter(iv), buf: buf}
+		c.w = &writer{Writer: c.DuplexConn, Stream: c.Encrypter(iv), buf: buf}
 	}
 	return nil
 }
@@ -168,4 +173,8 @@ func (c *conn) ReadFrom(r io.Reader) (int64, error) {
 		}
 	}
 	return c.w.ReadFrom(r)
+}
+
+func (c *conn) CloseWrite() error {
+	return c.DuplexConn.CloseWrite()
 }

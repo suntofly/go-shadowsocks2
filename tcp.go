@@ -3,18 +3,18 @@ package main
 import (
 	"net"
 
-	"github.com/shadowsocks/go-shadowsocks2/io"
+	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
 
 // Create a SOCKS server listening on addr and proxy to server.
-func socksLocal(addr, server string, shadow func(net.Conn) net.Conn) {
+func socksLocal(addr, server string, shadow func(ssnet.DuplexConn) ssnet.DuplexConn) {
 	logf("SOCKS proxy %s <-> %s", addr, server)
 	tcpLocal(addr, server, shadow, func(c net.Conn) (socks.Addr, error) { return socks.Handshake(c) })
 }
 
 // Create a TCP tunnel from addr to target via server.
-func tcpTun(addr, server, target string, shadow func(net.Conn) net.Conn) {
+func tcpTun(addr, server, target string, shadow func(ssnet.DuplexConn) ssnet.DuplexConn) {
 	tgt := socks.ParseAddr(target)
 	if tgt == nil {
 		logf("invalid target address %q", target)
@@ -25,7 +25,7 @@ func tcpTun(addr, server, target string, shadow func(net.Conn) net.Conn) {
 }
 
 // Listen on addr and proxy to server to reach target from getAddr.
-func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(net.Conn) (socks.Addr, error)) {
+func tcpLocal(addr, server string, shadow func(ssnet.DuplexConn) ssnet.DuplexConn, getAddr func(net.Conn) (socks.Addr, error)) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		logf("failed to listen on %s: %v", addr, err)
@@ -80,11 +80,7 @@ func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(
 			}
 
 			logf("proxy %s <-> %s <-> %s", clientConn.RemoteAddr(), server, tgt)
-			_, _, err = io.Relay(
-				clientConn, clientConn.CloseRead,
-				clientConn, clientConn.CloseWrite,
-				shadowConn, proxyConn.CloseRead,
-				shadowConn, proxyConn.CloseWrite)
+			_, _, err = ssnet.Relay(clientConn, shadowConn)
 			if err != nil {
 				logf("relay error: %v", err)
 			}
@@ -93,7 +89,7 @@ func tcpLocal(addr, server string, shadow func(net.Conn) net.Conn, getAddr func(
 }
 
 // Listen on addr for incoming connections.
-func tcpRemote(addr string, shadow func(net.Conn) net.Conn) {
+func tcpRemote(addr string, shadow func(ssnet.DuplexConn) ssnet.DuplexConn) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		logf("failed to listen on %s: %v", addr, err)
@@ -130,11 +126,7 @@ func tcpRemote(addr string, shadow func(net.Conn) net.Conn) {
 			tgtConn.SetKeepAlive(true)
 
 			logf("proxy %s <-> %s", clientConn.RemoteAddr(), tgt)
-			_, _, err = io.Relay(
-				shadowConn, clientConn.CloseRead,
-				shadowConn, clientConn.CloseWrite,
-				tgtConn, tgtConn.CloseRead,
-				tgtConn, tgtConn.CloseWrite)
+			_, _, err = ssnet.Relay(shadowConn, tgtConn)
 			if err != nil {
 				logf("relay error: %v", err)
 			}

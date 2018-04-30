@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	ssnet "github.com/shadowsocks/go-shadowsocks2/net"
 	"github.com/shadowsocks/go-shadowsocks2/shadowaead"
 	"github.com/shadowsocks/go-shadowsocks2/shadowstream"
 )
@@ -17,7 +18,7 @@ type Cipher interface {
 }
 
 type StreamConnCipher interface {
-	StreamConn(net.Conn) net.Conn
+	StreamConn(ssnet.DuplexConn) ssnet.DuplexConn
 }
 
 type PacketConnCipher interface {
@@ -110,14 +111,18 @@ func PickCipher(name string, key []byte, password string) (Cipher, error) {
 
 type aeadCipher struct{ shadowaead.Cipher }
 
-func (aead *aeadCipher) StreamConn(c net.Conn) net.Conn { return shadowaead.NewConn(c, aead) }
+func (aead *aeadCipher) StreamConn(c ssnet.DuplexConn) ssnet.DuplexConn {
+	return shadowaead.NewConn(c, aead)
+}
 func (aead *aeadCipher) PacketConn(c net.PacketConn) net.PacketConn {
 	return shadowaead.NewPacketConn(c, aead)
 }
 
 type streamCipher struct{ shadowstream.Cipher }
 
-func (ciph *streamCipher) StreamConn(c net.Conn) net.Conn { return shadowstream.NewConn(c, ciph) }
+func (ciph *streamCipher) StreamConn(c ssnet.DuplexConn) ssnet.DuplexConn {
+	return shadowstream.NewConn(c, ciph)
+}
 func (ciph *streamCipher) PacketConn(c net.PacketConn) net.PacketConn {
 	return shadowstream.NewPacketConn(c, ciph)
 }
@@ -126,8 +131,8 @@ func (ciph *streamCipher) PacketConn(c net.PacketConn) net.PacketConn {
 
 type dummy struct{}
 
-func (dummy) StreamConn(c net.Conn) net.Conn             { return c }
-func (dummy) PacketConn(c net.PacketConn) net.PacketConn { return c }
+func (dummy) StreamConn(c ssnet.DuplexConn) ssnet.DuplexConn { return c }
+func (dummy) PacketConn(c net.PacketConn) net.PacketConn     { return c }
 
 // key-derivation function from original Shadowsocks
 func kdf(password string, keyLen int) []byte {
